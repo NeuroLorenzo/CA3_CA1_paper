@@ -1,0 +1,288 @@
+model hill_tononi_neuron:
+    state:
+        t_spike ms = 0 ms
+        is_refractory boolean = true
+        g_spike boolean = false
+
+        V_m mV = ( g_NaL * E_Na + g_KL * E_K ) / ( g_NaL + g_KL ) # membrane potential
+        V_eq mV = ( g_NaL * E_Na + g_KL * E_K ) / ( g_NaL + g_KL ) # membrane potential
+        theta mV = theta_eq # Threshold
+
+
+        IKNa_D nS = D_eq_KNa_(V_eq)
+        IT_m nS = m_eq_T_(V_eq)
+        IT_h nS = h_eq_T_(V_eq)
+        Ih_m nS = m_eq_h_(V_eq)
+        g_AMPA real = 0
+        g_NMDA real = 0
+        g_GABAA real = 0
+        g_GABAB real = 0
+
+        g_AMPA$ real = AMPAInitialValue
+        g_NMDA$ real = NMDAInitialValue
+        g_GABAA$ real = GABA_AInitialValue
+        g_GABAB$ real = GABA_BInitialValue
+        m_fast_NMDA real =0
+        m_slow_NMDA real =0 
+   
+    equations:
+
+        #############
+        # V_m
+        #############
+        recordable inline V_dep mV = ((V_m-theta)>0) ? theta : V_m 
+        recordable inline m_eq_NMDA real = 1 / ( 1 + exp( ( NMDA_Vact - V_m ) * NMDA_Sact ) )
+
+        m_fast_NMDA' = ( m_eq_NMDA - m_fast_NMDA ) / tau_Mg_fast_NMDA;
+        m_slow_NMDA' = ( m_eq_NMDA - m_slow_NMDA ) / tau_Mg_slow_NMDA;
+
+        #m_fast_NMDA = ((m_fast_NMDA-m_eq_NMDA)>0)  ? m_eq_NMDA : m_fast_NMDA
+        #m_slow_NMDA = ((m_slow_NMDA-m_eq_NMDA)>0)  ? m_eq_NMDA : m_slow_NMDA
+        
+        recordable inline m_fast_NMDA_min real = ((m_fast_NMDA-m_eq_NMDA)>0)  ? m_eq_NMDA : m_fast_NMDA
+        recordable inline m_slow_NMDA_min real = ((m_slow_NMDA-m_eq_NMDA)>0)  ? m_eq_NMDA : m_slow_NMDA
+
+
+        recordable inline A1 real = 0.51 - 0.0028 * V_m;
+        recordable inline A2 real = 1 - A1;
+        recordable inline m_eq_NMDA_dyn real = (A1 * m_fast_NMDA_min + A2 * m_slow_NMDA_min)/mV
+
+        recordable inline m_NMDA_ real= instant_unblock_NMDA ? m_eq_NMDA : m_eq_NMDA_dyn
+
+        recordable inline I_syn_nmda pA =  -convolve(g_NMDA, NMDA)  * nS * ( V_m - E_rev_NMDA ) * m_NMDA_
+        #recordable inline I_syn_nmda pA =  -convolve(g_NMDA, NMDA)  * nS * ( V_m - E_rev_NMDA ) * m_eq_NMDA
+
+        recordable inline I_syn_ampa pA = -convolve(g_AMPA, AMPA) * nS * ( V_m - E_rev_AMPA )
+        #recordable inline I_syn_ampa pA = -convolve(g_AMPA, AMPA) * nS * ( V_dep )
+        recordable inline I_syn_gaba_a pA = -convolve(g_GABAA, GABA_A) * nS * ( V_m - E_rev_GABA_A )
+        recordable inline I_syn_gaba_b pA = -convolve(g_GABAB, GABA_B) * nS * ( V_m - E_rev_GABA_B )
+        recordable inline I_syn pA = I_syn_ampa + I_syn_nmda + I_syn_gaba_a + I_syn_gaba_b
+        
+
+
+        recordable inline I_Na pA = -g_NaL * ( V_m - E_Na )
+        recordable inline I_K pA = -g_KL * ( V_m - E_K )
+
+        # I_Na(p), m_inf^3 according to Compte et al, J Neurophysiol 2003 89:2707
+        inline INaP_thresh mV = -55.7 mV
+        inline INaP_slope mV = 7.7 mV
+        inline m_inf_NaP real = 1.0 / ( 1.0 + exp( -( V_m - INaP_thresh ) / INaP_slope ) )
+        # Persistent Na current; member only to allow recording
+        recordable inline I_NaP pA = -g_peak_NaP * m_inf_NaP**3 * ( V_m - E_rev_NaP )
+
+        inline d_half real = 0.25
+        inline m_inf_KNa real = 1.0 / ( 1.0 + ( d_half / ( IKNa_D / nS ) )**3.5 )
+        # Depol act. K current; member only to allow recording
+        recordable inline I_KNa pA = -g_peak_KNa * m_inf_KNa * ( V_m - E_rev_KNa )
+
+        # Low-thresh Ca current; member only to allow recording
+        recordable inline I_T pA = -g_peak_T / nS * IT_m**N_T / (nS**N_T)  * IT_h * ( V_m - E_rev_T )
+
+        recordable inline I_h pA = -g_peak_h / nS * Ih_m  * ( V_m - E_rev_h )
+        # The spike current is only activate immediately after a spike.
+        recordable inline I_spike mV = (t_spike>0.0005) ? -( V_m - E_K ) / tau_spike * ms : 0 mV
+        V_m'  = ( ( I_Na + I_K + I_syn + I_NaP + I_KNa + I_T + I_h + I_e + I_stim ) / tau_m + I_spike * pA/(ms * mV) ) * s/nF
+
+        #############
+        # Intrinsic currents
+        #############
+        # I_T
+
+
+
+        inline m_inf_T real = 1.0 / ( 1.0 + exp( -( V_m / mV + 59.0 ) / 6.2 ) )
+        inline h_inf_T real = 1.0 / ( 1.0 + exp( ( V_m / mV + 83.0 ) / 4 ) )
+        inline tau_m_h real = 1.0 / ( exp( -14.59 - 0.086 * V_m / mV ) + exp( -1.87 + 0.0701 * V_m / mV ) )
+        # I_KNa
+        inline D_influx_peak real = 0.025
+        inline D_thresh mV = -10.0 mV
+        inline D_slope mV = 5.0 mV
+        inline D_influx real = 1.0 / ( 1.0 + exp( -( V_m - D_thresh ) / D_slope ) )
+
+        theta' = -( theta - theta_eq ) / tau_theta
+
+        # equation modified from y[](1-D_eq) to (y[]-D_eq), since we'd not
+        # be converging to equilibrium otherwise
+        IKNa_D' = ( D_influx_peak * D_influx * nS - ( IKNa_D  - KNa_D_EQ / mV ) / tau_D ) / ms
+        
+
+
+        inline tau_m_T real = 0.22 / ( exp( -( V_m / mV + 132.0 ) / 16.7 ) + exp( ( V_m / mV + 16.8 ) / 18.2 ) ) + 0.13
+        inline tau_h_T real = 8.2 + ( 56.6 + 0.27 * exp( ( V_m / mV + 115.2 ) / 5.0 ) ) / ( 1.0 + exp( ( V_m / mV + 86.0 ) / 3.2 ) )
+        inline I_h_Vthreshold real = -75.0
+        inline m_inf_h real = 1.0 / ( 1.0 + exp( ( V_m / mV - I_h_Vthreshold ) / 5.5 ) )
+        IT_m' = ( m_inf_T * nS - IT_m ) / tau_m_T / ms
+        IT_h' = ( h_inf_T * nS - IT_h ) / tau_h_T / ms
+        Ih_m' = ( m_inf_h * nS - Ih_m ) / tau_m_h / ms
+
+
+
+        #############
+        # Synapses
+        #############
+        kernel g_AMPA' = g_AMPA$ - g_AMPA  / tau_decay_AMPA,
+               g_AMPA$' = -g_AMPA$ / tau_rise_AMPA
+
+        kernel g_NMDA' = g_NMDA$ - g_NMDA / tau_decay_NMDA,
+               g_NMDA$' = -g_NMDA$ / tau_rise_NMDA
+
+        kernel g_GABAA' = g_GABAA$ - g_GABAA / tau_decay_GABA_A,
+               g_GABAA$' = -g_GABAA$ / tau_rise_GABA_A
+
+        kernel g_GABAB' = g_GABAB$ - g_GABAB / tau_decay_GABA_B,
+               g_GABAB$' = -g_GABAB$ / tau_rise_GABA_B
+
+
+
+    parameters:
+        E_Na mV = 30.0 mV
+        E_K mV = -90.0 mV
+        g_NaL nS =  0.2 nS
+        g_KL nS = 1.0 nS       # 1.0 - 1.85
+        tau_m ms = 16.0 ms     # membrane time constant applying to all currents but repolarizing K-current (see [1, p 1677])
+        theta_eq mV = -51.0 mV # equilibrium value
+        tau_theta ms = 2.0 ms  # time constant
+        tau_spike ms = 1.75 ms # membrane time constant applying to repolarizing K-current
+        t_ref ms = 2.0 ms    # duration of re-polarizing potassium current
+
+        # Parameters for synapse of type AMPA, GABA_A, GABA_B and NMDA
+        g_peak_AMPA nS = 0.1 nS      # peak conductance
+        tau_rise_AMPA ms = 0.5 ms       # rise time
+        tau_decay_AMPA ms = 2.4 ms       # decay time, Tau_1 < Tau_2
+        E_rev_AMPA mV = 0.0 mV       # reversal potential
+        
+        g_peak_NMDA nS = 0.075 nS    # peak conductance
+        tau_rise_NMDA ms = 4.0 ms       # rise time
+        tau_decay_NMDA ms = 40.0 ms      # decay time, Tau_1 < Tau_2
+        E_rev_NMDA mV = 0.0 mV       # reversal potential
+        NMDA_Vact mV = -25.57 mV      # inactive for V << Vact, inflection of sigmoid
+        NMDA_Sact mV = 0.081 mV        # scale of inactivation
+        
+        g_peak_GABA_A nS = 0.33 nS   # peak conductance
+        tau_rise_GABA_A ms = 1.0 ms     # rise time
+        tau_decay_GABA_A ms = 7.0 ms     # decay time, Tau_1 < Tau_2
+        E_rev_GABA_A mV = -70.0 mV   # reversal potential
+        
+        g_peak_GABA_B nS = 0.0132 nS # peak conductance
+        tau_rise_GABA_B ms = 60.0 ms    # rise time
+        tau_decay_GABA_B ms = 200.0 ms   # decay time, Tau_1 < Tau_2
+        E_rev_GABA_B mV = -90.0 mV   # reversal potential for intrinsic current
+
+        # parameters for intrinsic currents
+        g_peak_NaP nS = 1.0 nS       # peak conductance for intrinsic current
+        E_rev_NaP mV = 30.0 mV       # reversal potential for intrinsic current
+        g_peak_KNa nS = 1.0 nS       # peak conductance for intrinsic current
+        E_rev_KNa mV = -90.0 mV      # reversal potential for intrinsic current
+        g_peak_T nS = 1.0 nS         # peak conductance for intrinsic current
+        E_rev_T mV = 0.0 mV          # reversal potential for intrinsic current
+        g_peak_h nS = 1.0 nS         # peak conductance for intrinsic current
+        E_rev_h mV = -40.0 mV        # reversal potential for intrinsic current
+        KNa_D_EQ pA = 0.001 pA
+        N_T real = 2. 
+        # constant external input current
+        I_e pA = 0 pA
+
+        inline tau_D real = 1250.0 # yes, 1.25 s
+        tau_Mg_fast_NMDA ms = 0.68 ms
+        tau_Mg_slow_NMDA ms = 22.7 ms
+        instant_unblock_NMDA boolean = false
+
+    internals:
+        AMPAInitialValue real = compute_synapse_constant( tau_rise_AMPA, tau_decay_AMPA, g_peak_AMPA )
+        NMDAInitialValue real = compute_synapse_constant( tau_rise_NMDA, tau_decay_NMDA, g_peak_NMDA )
+
+        GABA_AInitialValue real = compute_synapse_constant( tau_rise_GABA_A, tau_decay_GABA_A, g_peak_GABA_A )
+        GABA_BInitialValue real = compute_synapse_constant( tau_rise_GABA_B, tau_decay_GABA_B, g_peak_GABA_B )
+
+    input:
+        
+        AMPA <-  spike
+        NMDA <-  spike
+        GABA_A <-  spike
+        GABA_B <-  spike
+        I_stim pA <- continuous
+
+    output:
+        spike
+
+    update:
+        #print("{m_eq_NMDA_dyn} ")
+        #print("IT_m {IT_m} IT_h {IT_h} V_m {V_m}\n")
+
+        m_fast_NMDA =   m_fast_NMDA_min
+        m_slow_NMDA =   m_slow_NMDA_min
+        if is_refractory:
+            # neuron is absolute refractory, do not evolve ODEs
+            t_spike -= resolution()
+            integrate_odes()
+
+        else:
+            # neuron not refractory, so evolve all ODEs
+            integrate_odes()
+
+    onCondition(t_spike <= resolution() / 2):
+        # Deactivate potassium current after spike time have expired
+        g_spike = false # Deactivate potassium current.
+
+    onCondition(not g_spike and V_m >= theta):
+        # Set V and theta to the sodium reversal potential.
+        
+
+        # Activate fast potassium current. Drives the
+        # membrane potential towards the potassium reversal
+        # potential (activate only if duration is non-zero).
+        if is_refractory:
+            V_m = E_Na
+            #V_m = -70 mV
+            #theta = theta_eq
+            theta = 30 mV
+            g_spike = true
+        else:
+            g_spike = false
+            V_m =E_K
+            
+        t_spike = t_ref+resolution()
+
+        emit_spike()
+
+    function compute_synapse_constant(Tau_1 ms, Tau_2 ms, g_peak real) real:
+        # Factor used to account for the missing 1/((1/Tau_2)-(1/Tau_1)) term
+        # in the ht_neuron_dynamics integration of the synapse terms.
+        # See: Exact digital simulation of time-invariant linear systems
+        # with applications to neuronal modeling, Rotter and Diesmann,
+        # section 3.1.2.
+        exact_integration_adjustment real = ( ( 1 / Tau_2 ) - ( 1 / Tau_1 ) ) * ms
+
+        t_peak real = ( Tau_2 * Tau_1 ) * ln( Tau_2 / Tau_1 ) / ( Tau_2 - Tau_1 ) / ms
+        normalisation_factor real = 1 / ( exp( -t_peak / Tau_1 ) - exp( -t_peak / Tau_2 ) )
+
+        return g_peak * normalisation_factor * exact_integration_adjustment
+
+    function m_eq_T_(V mV) nS:
+        m_eq_T_init nS = 1.0 / ( 1.0 + exp( -( V + 59.0 ) / 6.2 ) )*nS
+        #print(" m init {m_eq_T_init} {V} ")
+
+        return m_eq_T_init
+
+    function h_eq_T_(V mV) nS:
+        
+        h_eq_T_init nS = 1.0 / ( 1.0 + exp( ( V + 83.0 ) / 4) )*nS
+        #print(" h init {h_eq_T_init}")
+
+        return h_eq_T_init
+
+    function m_eq_h_(V mV) nS:
+        I_h_Vthreshold mV = -75.0 mV
+        m_eq_h_init nS= 1.0 / ( 1.0 + exp( ( V - I_h_Vthreshold ) / 5.5 ) )*nS
+
+        return m_eq_h_init
+ 
+    function D_eq_KNa_(V mV) nS:
+
+        D_influx_peak real = 0.025
+        D_thresh real = -10.0
+        D_slope real= 5.0
+        D_eq real= 0.001
+
+        D_influx nS = D_influx_peak / ( 1.0 + exp( -( V - D_thresh ) / D_slope ) )*nS
+        return tau_D * D_influx + D_eq

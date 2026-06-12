@@ -1,0 +1,137 @@
+
+model stdp_tsodyks_Tartarini_synapse:
+    state:
+        w real = 1    # Synaptic weight
+        t_present ms = 0. ms
+        t_last ms = 0. ms
+        h real = 0.
+
+        # stdp state
+        pre_trace real = 0.
+        post_trace real = 0.
+        pre_trace_step real = 0.
+        post_trace_step real = 0.
+
+        t_last_2 ms = 0. ms
+        t_present_2 ms = 0. ms
+        h2 real = 0.
+       
+
+        # tsodyks state
+        u real =0.
+        x real = 1.
+        y real = 0.
+        delta_y real = 0.
+
+        Puu_ real = 0.
+        Puu_2 real = 0.
+        Puu_3 real = 0.
+        Pzz_ real = 0.
+        Pyy_ real = 0.
+        Pxy_ real = 0.
+        Pxz_ real = 0.
+        z real = 0.    
+
+    parameters:
+        d ms = 1 ms    # Synaptic transmission delay
+        # stdp parameters
+        lambda real = .01
+        tau_tr_pre ms = 20 ms
+        tau_tr_post ms = 20 ms
+        alpha real = 1
+        mu_plus real = 1
+        mu_minus real = 1
+        Wmax real = 100.
+        Wmin real = 0.
+        use_stdp real = 1.
+        # tsodyks parameters
+        tau_fac ms = 500 ms
+        tau_rec ms = 800 ms
+        tau_psc ms = 100 ms
+        dt ms = 0.1 ms
+        U real = 0.5
+        use_tsodyks real = 1.
+
+
+    equations:
+        pre_trace' = -pre_trace / tau_tr_pre
+        post_trace' = -post_trace / tau_tr_post
+
+    input:
+        pre_spikes <- spike
+        post_spikes <- spike
+
+    output:
+        spike(weight real, delay ms)
+
+    onReceive(post_spikes):
+        t_present_2=t
+
+        h=t_present_2-t_last
+        h2=t_last_2-t_present_2 
+        t_last_2=t
+
+        post_trace += 1
+
+        post_trace_step = post_trace_step*exp(h2/tau_tr_post) +1
+
+        
+        w_ real = Wmax * ( w / Wmax  + (lambda * ( 1. - ( w / Wmax ) )**mu_plus * pre_trace_step*exp((-h-d)/tau_tr_pre) ))
+
+        w = (use_stdp>0.)?  min(Wmax, w_):w
+        
+
+        
+    onReceive(pre_spikes):
+        t_present=t
+
+        h=t_present-t_last
+        h2=t_last_2-t_present+d
+        
+        t_last=t
+
+
+        #stdp update
+        pre_trace += 1
+        
+
+        pre_trace_step = pre_trace_step*exp(-h/tau_tr_pre) +1
+
+        # potentiate synapse
+        #w_ real = Wmax * ( w / Wmax  - ( alpha * lambda * ( w / Wmax )**mu_minus * post_trace_step*exp(h2/tau_tr_pre) ))
+        w_ real = Wmax * ( w / Wmax  + (lambda * ( 1. - ( w / Wmax ) )**mu_plus * post_trace_step*exp((h2+d)/tau_tr_pre) ))
+        w = (use_stdp>0.)?  min(Wmax, w_):w
+        
+
+        # Tsodyks update
+        Puu_= exp(-h/tau_fac)
+        Puu_2 =u*Puu_
+        Puu_3 = U*(1-Puu_2)
+        u = Puu_2 + Puu_3
+        
+        z=1-x-y
+
+        Pzz_ = exp(-h/tau_rec)
+        Pyy_ = exp(-h/tau_psc)
+        Pxy_ = ((Pzz_-1.)*tau_rec - (Pyy_-1.)*tau_psc)/(tau_psc-tau_rec)
+        Pxz_ = (1-Pzz_)
+
+        x= x+ Pxy_ * y + Pxz_ * z
+
+        y=y*Pyy_
+
+        delta_y= (use_tsodyks>0.) ? u*x : 1
+
+        x= x - delta_y
+        y= y + delta_y
+
+
+
+        # deliver spike to postsynaptic partner
+        emit_spike(w*delta_y, d)
+
+    update:
+        integrate_odes()
+
+
+

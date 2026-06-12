@@ -1,0 +1,6 @@
+{
+    "synapse_model": "static_synapse",
+    "receptor_type": 1,
+    "weight": 0.0,
+    "delay": 2.0
+}
