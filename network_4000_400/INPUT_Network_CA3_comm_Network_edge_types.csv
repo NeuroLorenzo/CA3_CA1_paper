@@ -1,2 +1,0 @@
-edge_type_id target_query source_query model_template delay dynamics_params syn_weight
-100 * * static_synapse 2.000000 synapse_params_cus/input.json 0.000000

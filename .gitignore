@@ -1,3 +1,5 @@
 *.sif
 *.h5
 *.txt
+network_*/
+data/
